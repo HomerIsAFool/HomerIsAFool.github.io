@@ -1,0 +1,1711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>τ₀-VLA 论文阅读报告 · 世界模型引导测试时计算的分层机器人基础模型</title>
+    <meta
+      name="description"
+      content="τ₀-VLA 论文阅读报告：分层机器人基础模型、世界模型引导的测试时计算（TTC）、可修正执行记忆、Qwen3.5 + MoT 动作专家与条件流匹配、统一 40 维状态/动作空间，以及实机长时序任务评测结果。"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="progress"></div>
+    <button id="menu-btn" aria-label="打开目录">☰ 目录</button>
+
+    <div class="layout">
+      <!-- ================= 侧栏目录 ================= -->
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">Technical Report · <span>τ₀-VLA</span></div>
+        <div class="brand-sub">
+          A Hierarchical Robot Foundation Model with World-Model-Guided
+          Test-Time Computation
+        </div>
+
+        <ul class="toc" id="toc">
+          <li><a href="#abstract"><span class="num">00</span>速览</a></li>
+          <li><a href="#problem"><span class="num">01</span>问题：长时序为何会崩</a></li>
+          <li><a href="#idea"><span class="num">02</span>核心思想：子任务作为搜索空间</a></li>
+          <li><a href="#arch"><span class="num">03</span>整体架构：两套系统、两个时间尺度</a></li>
+          <li class="sub"><a href="#arch-highlevel">3.1 高层策略</a></li>
+          <li class="sub"><a href="#arch-lowlevel">3.2 低层策略</a></li>
+          <li><a href="#ttc"><span class="num">04</span>世界模型引导的测试时计算</a></li>
+          <li class="sub"><a href="#ttc-route">4.1 置信度路由</a></li>
+          <li class="sub"><a href="#ttc-search">4.2 搜索、预测与反思</a></li>
+          <li class="sub"><a href="#ttc-scaling">4.3 计算量–精度曲线</a></li>
+          <li><a href="#memory"><span class="num">05</span>可修正的执行记忆</a></li>
+          <li><a href="#lowlevel"><span class="num">06</span>低层策略的技术细节</a></li>
+          <li class="sub"><a href="#ll-backbone">6.1 骨干与动作专家</a></li>
+          <li class="sub"><a href="#ll-attn">6.2 联合注意力机制</a></li>
+          <li class="sub"><a href="#ll-fm">6.3 条件流匹配</a></li>
+          <li class="sub"><a href="#ll-mask">6.4 失活维度的处理</a></li>
+          <li><a href="#unified"><span class="num">07</span>统一 40 维动作空间</a></li>
+          <li><a href="#data"><span class="num">08</span>数据与训练配方</a></li>
+          <li><a href="#results"><span class="num">09</span>实验结果</a></li>
+          <li class="sub"><a href="#res-real">9.1 实机长时序任务</a></li>
+          <li class="sub"><a href="#res-ttc">9.2 决策质量</a></li>
+          <li class="sub"><a href="#res-cross">9.3 跨本体泛化</a></li>
+          <li><a href="#infer"><span class="num">10</span>推理与部署工程</a></li>
+          <li><a href="#repro"><span class="num">11</span>复现路径</a></li>
+          <li><a href="#discuss"><span class="num">12</span>评述：贡献与局限</a></li>
+          <li><a href="#refs"><span class="num">13</span>资料与术语</a></li>
+        </ul>
+
+        <div class="sidebar-foot">
+          <a href="https://tau0-vla.github.io/" target="_blank" rel="noopener">↗ 项目主页</a>
+          <a href="https://tau0-vla.github.io/tau0-vla.pdf" target="_blank" rel="noopener">↗ 论文 PDF</a>
+          <a href="https://huggingface.co/sii-research/tau-0-vla" target="_blank" rel="noopener">↗ Hugging Face 权重</a>
+          <a href="https://github.com/sii-research/tau-0-vla" target="_blank" rel="noopener">↗ 代码仓库</a>
+        </div>
+      </aside>
+
+      <!-- ================= 正文 ================= -->
+      <main class="content">
+        <div class="wrap">
+          <!-- ---------- Hero ---------- -->
+          <header class="hero">
+            <div class="kicker">Paper Reading Report · Robot Foundation Model</div>
+            <h1>
+              <span class="tau">τ₀-VLA</span>：用世界模型引导测试时计算的<br />分层机器人基础模型
+            </h1>
+            <p class="lede">
+              一个长达 12 分钟、包含 25 个有序步骤的家务任务，机器人真正的难点已经不是"这一帧该输出什么关节角"，
+              而是"我做到哪一步了、下一步该做什么、刚才那一步是不是失败了"。τ₀-VLA 的答案是：
+              把<strong>子任务</strong>暴露成显式接口，在决策点上<strong>先用世界模型预测各候选子任务的视觉后果，再比较、再提交</strong>，
+              并用一套可被修正的执行记忆把预测与物理现实持续对齐。
+            </p>
+
+            <div class="badges">
+              <a class="badge solid" href="https://tau0-vla.github.io/tau0-vla.pdf" target="_blank" rel="noopener">论文 PDF</a>
+              <a class="badge" href="https://tau0-vla.github.io/" target="_blank" rel="noopener">项目主页</a>
+              <a class="badge" href="https://huggingface.co/sii-research/tau-0-vla" target="_blank" rel="noopener">模型权重</a>
+              <a class="badge" href="https://github.com/sii-research/tau-0-vla" target="_blank" rel="noopener">开源实现</a>
+              <span class="badge">SII Research · 2026.07</span>
+            </div>
+
+            <div class="stat-grid">
+              <div class="stat">
+                <div class="v">45.0%</div>
+                <div class="k">四项长时序实机任务平均成功率<br />（直接执行为 27.5%）</div>
+              </div>
+              <div class="stat">
+                <div class="v">+15~24pt</div>
+                <div class="k">测试时计算带来的<br />下一子任务预测精度提升</div>
+              </div>
+              <div class="stat">
+                <div class="v">+11.0pt</div>
+                <div class="k">可修正记忆单独带来的<br />决策精度提升</div>
+              </div>
+              <div class="stat">
+                <div class="v">40,115 h</div>
+                <div class="k">异构真机数据预训练时长<br />（多模态共训练）</div>
+              </div>
+              <div class="stat">
+                <div class="v">40-D</div>
+                <div class="k">跨本体统一状态/动作空间<br />（含掩码机制）</div>
+              </div>
+              <div class="stat">
+                <div class="v">13–25</div>
+                <div class="k">实机评测任务的<br />有序步骤数区间</div>
+              </div>
+            </div>
+
+            <div class="note">
+              <span class="label">阅读说明</span>
+              <p>
+                本报告分三层组织：<em>动机与方法</em>（§1–§5）解释论文在讲什么；<em>技术实现</em>（§6–§8）
+                对照官方开源实现，把论文里一句话的设计还原成代码层面的具体契约；<em>实验与评述</em>（§9–§12）
+                梳理数据、结论边界与未解问题。带
+                <span style="color: var(--lo)">青绿色标记</span> 的段落表示结论直接来自代码而非论文正文。
+              </p>
+            </div>
+          </header>
+
+          <!-- ---------- 00 速览 ---------- -->
+          <section id="abstract">
+            <h2><span class="h-num">00</span>速览：一页话讲清 τ₀-VLA</h2>
+            <p class="section-lede">
+              如果只读一段，读这一段。
+            </p>
+
+            <p>
+              τ₀-VLA 是一个面向<strong>长时序操作</strong>（long-horizon manipulation）的分层机器人基础模型。
+              它把一个完整任务拆成两个在不同时间尺度上运行的策略：
+            </p>
+
+            <div class="cards">
+              <div class="card">
+                <span class="tag">System 2 · 慢</span>
+                <h4 style="color: var(--hi)">高层策略</h4>
+                <p>
+                  只在<strong>子任务边界</strong>被调用。输入任务指令、当前观测、执行记忆，
+                  输出下一个子任务的自然语言描述，同时更新进度记录。
+                  当它对自己的决策不自信时，会额外花算力去搜索、预测和反思。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">System 1 · 快</span>
+                <h4 style="color: var(--lo)">低层策略</h4>
+                <p>
+                  以正常控制频率运行的通才 VLA。Qwen3.5 视觉语言骨干 +
+                  Mixture-of-Transformers 动作专家，用条件流匹配训练，
+                  在统一 40 维状态/动作空间上跨本体执行被选中的子任务。
+                </p>
+              </div>
+            </div>
+
+            <p>论文的三个核心技术贡献，可以对应到三个具体机制：</p>
+
+            <ol>
+              <li>
+                <strong>世界模型引导的测试时计算（TTC）</strong>：不再"一次前向定生死"。
+                提出多个候选子任务 → 用世界模型预测每个候选<em>执行后的视觉结果</em> →
+                用价值模型给预测结果打分 → 比较分支后再提交。
+                这把决策的证据从"当前观测"扩展到了"想象中的未来观测"。
+              </li>
+              <li>
+                <strong>选择性计算（置信度路由）</strong>：不是所有决策都值得深思。
+                用 token 置信度统计判断当前决策是否不确定，高置信直接放行，低置信才展开搜索。
+                这让"更多算力=更好决策"这条曲线在实际部署中变得经济可用。
+              </li>
+              <li>
+                <strong>可修正的执行记忆</strong>：抓空了、物体不见了，进度记录就会失真。
+                τ₀-VLA 允许记忆在新视觉证据与记录冲突时<em>前进、回滚或重试</em>。
+                关键是这些纠错行为不需要专门采集纠错数据集——通过<strong>扰动已有演示派生出的记忆</strong>就能学到。
+              </li>
+            </ol>
+
+            <figure>
+              <img src="./assets/overview.png" alt="τ₀-VLA 总览图" />
+              <figcaption>
+                图 0 · τ₀-VLA 总览（取自官方仓库 <code>assets/overview.png</code>）。
+                上层是带记忆的高层决策与世界模型搜索，下层是跨本体的通才执行策略。
+              </figcaption>
+            </figure>
+          </section>
+
+          <!-- ---------- 01 问题 ---------- -->
+          <section id="problem">
+            <h2><span class="h-num">01</span>问题：长时序任务为什么会崩</h2>
+            <p class="section-lede">
+              任务从几秒变成几分钟，失败的主导原因发生了迁移。
+            </p>
+
+            <p>
+              论文的动机建立在一个经验观察上：随着任务时长增长，<strong>失败原因的构成变了</strong>。
+              准备一杯奶茶要依次倒奶、倒茶、加小料、盖盖、插吸管，几十个步骤；
+              打扫房间还要移动、收衣服、挂包、递毯子、扔垃圾。在这种任务里：
+            </p>
+
+            <ul>
+              <li>
+                <strong>短时任务的瓶颈是动作精度</strong>——抓得准不准，轨迹平不平滑。
+              </li>
+              <li>
+                <strong>长时任务的瓶颈是进度跟踪、结果预测与子任务规划</strong>——
+                机器人必须记住做完了什么、选出下一个恰当的步骤、并在动作失败后恢复。
+              </li>
+            </ul>
+
+            <h3>现有分层 VLA 的共同缺陷</h3>
+
+            <p>
+              分层 VLA 本身不新：把语言子任务作为高层推理与低层控制之间的接口，是已经被广泛采用的做法。
+              论文指出的问题在于——<strong>大多数方法的每一次高层决策都只用一次前向传播完成</strong>。
+              它们把当前观测和执行历史直接映射到下一个子任务，过程中：
+            </p>
+
+            <ul>
+              <li>没有显式比较备选方案；</li>
+              <li>没有估计这些备选方案会导致什么物理状态。</li>
+            </ul>
+
+            <div class="note caution">
+              <span class="label">代价的不对称性</span>
+              <p>
+                这带来一个致命的不对称：<strong>一个糟糕的决策往往要等到执行之后才被发现，而此时环境已经被改变了。</strong>
+                倒错了顺序、盖子盖歪了、把该留的东西扔了——这些错误不是"重来一次"就能抹平的。
+                长时序任务里，错误会沿着后续步骤复合放大（compound）。
+              </p>
+            </div>
+
+            <h3>反过来看：单靠低层策略也不行</h3>
+            <p>
+              论文在结尾处给出了一个对称的论述，值得提前引用，因为它解释了为什么必须做分层：
+            </p>
+            <ul>
+              <li>
+                一个低层 VLA <em>可以</em>可靠地把观测映射成动作块，但当它无法判断这些动作对应长时序任务的<strong>哪个阶段</strong>时，仍然会失败。
+              </li>
+              <li>
+                反之，一个高层策略<em>可以</em>提出看起来合理的计划，但缺少"实际发生了什么"的反馈时，也会失败。
+              </li>
+            </ul>
+            <p>
+              τ₀-VLA 把两者连起来：一个跟踪进度并预测结果的高层策略，配一个把选定子任务落地为机器人动作的执行器。
+            </p>
+          </section>
+
+          <!-- ---------- 02 核心思想 ---------- -->
+          <section id="idea">
+            <h2><span class="h-num">02</span>核心思想：为什么"子任务"是好的搜索空间</h2>
+            <p class="section-lede">
+              测试时计算的前提是有一个可搜索的空间。论文论证了子任务恰好满足这个条件。
+            </p>
+
+            <p>
+              LLM 领域的测试时计算（test-time computation）已经被证明有效：多采样、验证、反思。
+              但把它搬到机器人上有个障碍——<strong>在什么空间里搜索？</strong>
+              在原始动作空间（关节角序列）里搜索是灾难性的：维度高、时间步密、单步差异在语义上几乎没有意义、
+              也无法通过视觉判断好坏。
+            </p>
+
+            <p>
+              论文的关键论断是：<strong>子任务构成了一个紧凑、语义结构化的搜索空间</strong>，因为它同时满足三个性质：
+            </p>
+
+            <div class="cards">
+              <div class="card">
+                <span class="tag">性质 1</span>
+                <h4>稀疏的决策边界</h4>
+                <p>
+                  子任务只在稀疏的决策边界处发生。这意味着搜索的调用次数是可控的，
+                  不需要在每个控制周期都推理。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">性质 2</span>
+                <h4>对齐任务的逻辑阶段</h4>
+                <p>
+                  子任务与任务的逻辑阶段天然对齐（"倒奶"、"盖盖子"），
+                  因此候选之间的差异是语义级别的，可以被语言模型有意义地枚举和排序。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">性质 3</span>
+                <h4>产生可视觉评估的变化</h4>
+                <p>
+                  一个子任务执行完会带来<strong>可见的场景变化</strong>。
+                  这是关键——它使得"预测后果 + 用视觉打分"这条路径成立。
+                </p>
+              </div>
+            </div>
+
+            <p>
+              第三点特别重要，它是世界模型能够介入的原因。如果候选之间的差异不可见，
+              那么预测视觉后果就毫无价值；正因为"盖上盖子"和"插入吸管"会产生截然不同的图像，
+              价值模型才能从预测图像中读出候选的质量。
+            </p>
+
+            <div class="eq">
+              <span class="cmt"># 决策的证据来源，从一层扩展到三层</span><br />
+              Plan Once : &nbsp; a* = π<span class="sub">hi</span>(o<span class="sub">t</span>, m<span class="sub">t</span>, g) &nbsp;&nbsp;<span class="cmt">// 单次前向</span><br />
+              Best-of-N : &nbsp; a* = argmax<span class="sub">a∈A</span> V(a | o<span class="sub">t</span>, m<span class="sub">t</span>, g) &nbsp;&nbsp;<span class="cmt">// 一步候选排序</span><br />
+              TTC &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; : &nbsp; a* = argmax<span class="sub">branch</span> V( W(o<span class="sub">t</span>, a<span class="sub">1..k</span>) ) &nbsp;&nbsp;<span class="cmt">// 世界模型 W 展开多步分支后评分</span>
+            </div>
+            <p class="tbl-cap">
+              符号：o=观测，m=执行记忆，g=任务指令，V=价值模型，W=世界模型。
+              上式为便于理解的示意写法，非论文原式。
+            </p>
+          </section>
+
+          <!-- ---------- 03 架构 ---------- -->
+          <section id="arch">
+            <h2><span class="h-num">03</span>整体架构：两套系统，两个时间尺度</h2>
+            <p class="section-lede">
+              分层的本质是解耦时间尺度：高层在子任务边界上思考，低层在控制周期上执行。
+            </p>
+
+            <figure>
+              <img src="./assets/method.png" alt="τ₀-VLA 分层流程图" />
+              <figcaption>
+                图 1 · 分层流程（取自官方仓库 <code>assets/method.png</code>）。
+                左：记忆感知的高层决策；中：选择性的世界模型引导搜索；右：低层 VLA 执行。
+              </figcaption>
+            </figure>
+
+            <h3 id="arch-highlevel">3.1 高层策略：读记忆、出子任务、更新进度</h3>
+
+            <p>在每个子任务边界上，高层策略执行一个闭环：</p>
+
+            <ol class="timeline">
+              <li>
+                <div class="st">Step 1 · 读取</div>
+                <div class="sb">读入任务指令 + 当前观测 + 执行记忆</div>
+                <p>
+                  执行记忆（execution memory）是一份进度记录，描述"到目前为止哪些步骤已经完成"。
+                  它不是原始图像历史，而是被结构化过的、语义级的进度状态。
+                </p>
+              </li>
+              <li>
+                <div class="st">Step 2 · 路由</div>
+                <div class="sb">用 token 置信度统计决定是否加算力</div>
+                <p>
+                  这是 τ₀-VLA 的"选择性"所在。置信度高 → 立即行动；置信度低 → 进入下一步的搜索流程。
+                </p>
+              </li>
+              <li>
+                <div class="st">Step 3 · 搜索（条件触发）</div>
+                <div class="sb">提出备选 → 世界模型预测后果 → 价值模型打分 → 比较分支</div>
+                <p>
+                  搜索与反思在此比较各分支，然后才提交其中一个。
+                </p>
+              </li>
+              <li>
+                <div class="st">Step 4 · 提交</div>
+                <div class="sb">把选中的子任务下发给低层策略</div>
+                <p>
+                  低层策略拿到的是一个<strong>有界的（bounded）</strong>子任务，
+                  而不是整个长任务指令。这一点在实验中被证明极其重要（见 §9.1）。
+                </p>
+              </li>
+              <li>
+                <div class="st">Step 5 · 闭环</div>
+                <div class="sb">用实际观测到的执行结果更新记忆</div>
+                <p>
+                  这一步闭合了"预测后果"与"物理后果"之间的回路。
+                  没有这一步，世界模型的想象就会与现实脱钩。
+                </p>
+              </li>
+            </ol>
+
+            <h3 id="arch-lowlevel">3.2 低层策略：一个通才 VLA，两种输入模式</h3>
+
+            <p>
+              低层策略是一个<strong>通才（generalist）VLA</strong>。它的一个重要工程性质是：
+              <strong>控制接口在两种设置下完全一致</strong>——
+            </p>
+
+            <div class="diagram">
+              <div class="dg-label">低层策略的两种调用方式（同一套权重、同一个接口）</div>
+              <div class="dg-row">
+                <div class="dg-box">
+                  <div class="t">直接执行 Direct</div>
+                  <div class="d">输入 = 完整原始任务指令。策略必须自己在整段 episode 中推断"我现在处于哪个阶段"。</div>
+                </div>
+                <div class="dg-box hi">
+                  <div class="t">分层执行 Hierarchical</div>
+                  <div class="d">输入 = 高层策略从最新观测与执行记忆中选出的有界子任务。</div>
+                </div>
+              </div>
+              <div class="dg-arrow">↓ 同一个低层策略 ↓</div>
+              <div class="dg-row">
+                <div class="dg-box lo">
+                  <div class="t">Qwen3.5 VL 骨干 + MoT 动作专家（流匹配）</div>
+                  <div class="d">多视角观测 + 机器人状态 + 语言 → 动作块（action chunk）</div>
+                </div>
+              </div>
+            </div>
+
+            <p>
+              这个设计使消融实验变得干净：论文报告的 27.5% → 45.0% 的提升，
+              <strong>不是因为换了更强的执行策略</strong>，
+              而纯粹反映了"显式跟踪进度并决定下一步做什么"所带来的收益。
+            </p>
+          </section>
+
+          <!-- ---------- 04 TTC ---------- -->
+          <section id="ttc">
+            <h2><span class="h-num">04</span>世界模型引导的测试时计算</h2>
+            <p class="section-lede">
+              论文最核心的技术贡献。三个组件：置信度路由、世界模型展开、价值模型评分。
+            </p>
+
+            <h3 id="ttc-route">4.1 置信度路由：什么时候值得多想</h3>
+
+            <p>
+              直接对每个决策都做搜索是不经济的：世界模型的视觉预测和多步分支展开都很贵。
+              τ₀-VLA 用<strong>token 置信度统计</strong>做路由：
+            </p>
+
+            <div class="diagram">
+              <div class="dg-label">选择性测试时计算的分流</div>
+              <div class="dg-row">
+                <div class="dg-box">
+                  <div class="t">计算 token 置信度统计</div>
+                  <div class="d">从高层策略生成子任务描述时的 token 分布中提取不确定性信号</div>
+                </div>
+              </div>
+              <div class="dg-arrow">↓ 分流 ↓</div>
+              <div class="dg-row">
+                <div class="dg-box lo">
+                  <div class="t">高置信 → 直接提交</div>
+                  <div class="d">跳过世界模型与价值模型，按 Plan Once 的成本执行。绝大多数常规步骤走这条路。</div>
+                </div>
+                <div class="dg-box hi">
+                  <div class="t">低置信 → 展开搜索</div>
+                  <div class="d">提出备选子任务、预测后果、打分、反思，然后提交。只在需要推理时付出代价。</div>
+                </div>
+              </div>
+            </div>
+
+            <p>
+              论文明确表述：这种选择性测试时计算使<strong>下一子任务准确率在域内与分布偏移设置下提升了 15–24 个百分点</strong>。
+              注意这是"选择性"版本的收益，而不是"永远搜索"版本的收益——后者会贵得多，收益却接近饱和（见 §4.3）。
+            </p>
+
+            <h3 id="ttc-search">4.2 搜索、后果预测与反思</h3>
+
+            <p>论文比较了三个层级的高层决策方式，理解它们的差异是理解 TTC 价值的关键：</p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方式</th>
+                    <th>做什么</th>
+                    <th>用到的证据</th>
+                    <th class="num">相对成本</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Plan Once</strong></td>
+                    <td>做一次子任务预测</td>
+                    <td>当前观测 + 记忆</td>
+                    <td class="num">1×</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Best-of-N</strong></td>
+                    <td>采样并评分多个<em>一步</em>候选</td>
+                    <td>当前观测 + 记忆 + 候选本身</td>
+                    <td class="num">N×</td>
+                  </tr>
+                  <tr class="ours">
+                    <td><strong>TTC</strong></td>
+                    <td>进一步展开<em>多步</em>分支，带后果预测与反思，然后提交</td>
+                    <td>+ 世界模型预测的未来观测</td>
+                    <td class="num">≫ N×（但被路由摊薄）</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">
+              表 1 · 三种高层决策方式。关键区别在最后一列证据：只有 TTC 使用了"想象中的未来观测"。
+            </p>
+
+            <p>
+              论文对 TTC 优势来源的解释非常直接：<strong>在决策时刻预测后果，提供了超越单次前向预测或一步候选排序的额外证据</strong>。
+              这也解释了为什么优势在分布偏移下最明显——
+              当布局是没见过的，模型的先验（"通常下一步是什么"）不可靠，
+              但"如果我这么做，场景会变成什么样"这个物理推理仍然可迁移。
+            </p>
+
+            <div class="note">
+              <span class="label">最有说服力的一组数字</span>
+              <p>
+                在<strong>未见过的 Book Organization 布局</strong>（out-of-domain）上：
+                Plan Once 的下一子任务准确率 <strong>50.0%</strong>，
+                Best-of-N <strong>57.5%</strong>，
+                TTC <strong>74.0%</strong>。
+                Best-of-N 相比 Plan Once 只提升了 7.5 点，而加入后果预测后又提升了 16.5 点——
+                <em>额外的算力必须花在"预测物理后果"上才有大收益，单纯多采几个候选是不够的。</em>
+              </p>
+            </div>
+
+            <h3 id="ttc-scaling">4.3 计算量–精度曲线：收益会饱和</h3>
+
+            <p>论文对 scaling 行为给出了一个诚实的描述，这对实际部署很有指导意义：</p>
+
+            <ul>
+              <li>在<strong>低到中等计算预算</strong>区间，准确率提升很快；</li>
+              <li>之后<strong>逐渐饱和</strong>（gradually saturates）；</li>
+              <li>因此"收益不需要无限算力"，而置信度路由正是为了落在曲线的高性价比段。</li>
+            </ul>
+
+            <p>
+              这也构成了一个方法论上的自洽闭环：如果收益不饱和，那么"选择性"就没有必要——一直搜索就好；
+              正因为收益饱和且成本线性增长，把算力<strong>定向</strong>投放到不确定的决策上才是最优策略。
+            </p>
+          </section>
+
+          <!-- ---------- 05 记忆 ---------- -->
+          <section id="memory">
+            <h2><span class="h-num">05</span>可修正的执行记忆：让记忆与物理世界同步</h2>
+            <p class="section-lede">
+              这是论文里容易被忽略、但工程价值极高的一节。
+            </p>
+
+            <p>
+              整个闭环要可靠，前提是<strong>执行记忆必须与物理世界保持同步</strong>。
+              但现实会不断破坏这种同步：
+            </p>
+
+            <ul>
+              <li><strong>抓取失败</strong>：机器人以为"已拿起杯子"，实际上手是空的 → 记忆过于乐观；</li>
+              <li><strong>物体缺失</strong>：要找的东西不在预期位置 → 一个原本合理的进度记录变成了错误的；</li>
+              <li><strong>记忆滞后</strong>：某步实际已完成，但记录没更新 → 机器人重复劳动。</li>
+            </ul>
+
+            <p>
+              论文的处理方式是让记忆<strong>可被修正（revisable）</strong>。
+              当新的视觉证据与记忆冲突时，τ₀-VLA 可以采取三种操作：
+            </p>
+
+            <div class="cards">
+              <div class="card">
+                <span class="tag">Advance</span>
+                <h4>前进</h4>
+                <p>视觉表明进度实际上比记录更靠前（记忆滞后）→ 跳过已完成的步骤，把记录推进到正确位置。</p>
+              </div>
+              <div class="card">
+                <span class="tag">Roll back</span>
+                <h4>回滚</h4>
+                <p>视觉表明某个"已完成"的步骤其实没成（记忆过于乐观）→ 撤回该条记录。</p>
+              </div>
+              <div class="card">
+                <span class="tag">Retry</span>
+                <h4>重试</h4>
+                <p>当前步骤未达成预期结果 → 重新执行，而不是盲目推进到下一步。</p>
+              </div>
+            </div>
+
+            <p>
+              重要的是，论文强调修正是<strong>局部的</strong>：纠正滞后或过于乐观的记录时，
+              <em>仍然保留此前有效的进度</em>（preserving valid earlier progress）。
+              这不是"出错就重置"，而是精确定位到出错的那一条记录。
+            </p>
+
+            <h3>如何学到这些纠错行为：扰动已有演示</h3>
+
+            <div class="note code-truth">
+              <span class="label">这是本节最巧妙的一点</span>
+              <p>
+                纠错行为通常需要"失败-恢复"数据，而这类数据极难采集（你得故意让机器人失败，还要标注恢复过程）。
+                τ₀-VLA 绕开了这个问题：<strong>它通过扰动从已有演示派生出的记忆来学习这些行为，不需要单独采集纠错数据集</strong>
+                （without collecting a separate correction dataset）。
+              </p>
+              <p>
+                直觉上：取一段成功演示，人为把它的进度记录改错（多写一步 / 少写一步 / 写错一步），
+                然后训练模型在看到真实观测时把记录纠正回来。
+                成功演示天然携带了"正确的进度记录"这一监督信号，扰动只是把它变成了纠错任务的训练样本。
+              </p>
+            </div>
+
+            <p>
+              效果：论文报告可修正记忆<strong>单独带来 11.0 个百分点</strong>的下一子任务准确率提升。
+              这与 TTC 的 15–24 点是两个相对独立的贡献——一个管"决策前多想"，一个管"决策依据别失真"。
+            </p>
+
+            <div class="eq">
+              <span class="cmt"># 高层决策的完整循环（含记忆修正）</span><br />
+              m'<span class="sub">t</span> &nbsp;= Revise(m<span class="sub">t</span>, o<span class="sub">t</span>) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cmt">// advance / roll back / retry</span><br />
+              a<span class="sub">t</span> &nbsp;&nbsp;= Decide(g, o<span class="sub">t</span>, m'<span class="sub">t</span>) &nbsp;&nbsp;&nbsp;<span class="cmt">// 置信度路由 → Plan Once 或 TTC</span><br />
+              o<span class="sub">t+1</span> = Execute(a<span class="sub">t</span>) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cmt">// 低层 VLA 在控制频率上执行</span><br />
+              m<span class="sub">t+1</span> = Update(m'<span class="sub">t</span>, a<span class="sub">t</span>, o<span class="sub">t+1</span>) <span class="cmt">// 用观测到的结果闭环</span>
+            </div>
+          </section>
+
+          <!-- ---------- 06 低层策略细节 ---------- -->
+          <section id="lowlevel">
+            <h2><span class="h-num">06</span>低层策略的技术细节</h2>
+            <p class="section-lede">
+              本节及后两节对照官方开源实现，把论文里的一句话还原为可验证的代码契约。
+              主要来源：<code>src/tau0_vla/models/.../modeling_tau_vla.py</code>。
+            </p>
+
+            <h3 id="ll-backbone">6.1 骨干 + 动作专家：Mixture-of-Transformers 的具体形态</h3>
+
+            <p>
+              论文描述低层策略为"Qwen3.5 视觉语言骨干 + Mixture-of-Transformers 动作专家，
+              通过条件流匹配训练"。代码里这被实现成两个<strong>逐层配对</strong>的塔：
+            </p>
+
+            <div class="diagram">
+              <div class="dg-label">双塔结构（层数强制相等，逐层交互）</div>
+              <div class="dg-row">
+                <div class="dg-box hi">
+                  <div class="t">VLM 塔 · Qwen3.5-VL</div>
+                  <div class="d">
+                    混合注意力：部分层为 <code>full_attention</code>，部分层为
+                    <code>linear_attention</code>（GatedDeltaNet）。使用 3D M-RoPE。
+                  </div>
+                </div>
+                <div class="dg-box lo">
+                  <div class="t">动作专家塔 · Qwen3.5-Text</div>
+                  <div class="d">
+                    <strong>所有层强制为 <code>full_attention</code></strong>（不使用 GatedDeltaNet）。
+                    使用 1D RoPE。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <p>为了让两塔能在序列维度上拼接做联合注意力，代码在构造时强制对齐了若干超参：</p>
+
+            <div class="code-title">modeling_tau_vla.py · Qwen35vlWithExpertModel.__init__</div>
+            <pre><code class="lang-py"># 层数对齐：专家层数被强制改为与 VLM 相同，且全部为 full_attention
+if self.config.qwen_expert_config.num_hidden_layers != vlm_num_layers:
+    self.config.qwen_expert_config.num_hidden_layers = vlm_num_layers
+    self.config.qwen_expert_config.layer_types = ["full_attention"] * vlm_num_layers
+
+# 头数 / head_dim 对齐：联合注意力要在 seq 维 concat，这三项必须一致
+self.config.qwen_expert_config.num_attention_heads  = vlm_text_config.num_attention_heads
+self.config.qwen_expert_config.num_key_value_heads  = vlm_text_config.num_key_value_heads
+self.config.qwen_expert_config.head_dim             = vlm_text_config.head_dim</code></pre>
+
+            <p>代码注释里还记录了相对上一代（Qwen2 系）架构的几项关键差异，可视为 Qwen3.5 骨干带来的收益：</p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>机制</th>
+                    <th>做法</th>
+                    <th>意义</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Gated Query Attention</td>
+                    <td><code>q_proj → [Q, gate]</code>，输出为 <code>attn * sigmoid(gate)</code></td>
+                    <td>为注意力输出加一个逐通道门控，增强表达力</td>
+                  </tr>
+                  <tr>
+                    <td>QK-Norm</td>
+                    <td>内建 per-head RMSNorm 作用于 Q/K</td>
+                    <td>稳定长序列下的注意力数值</td>
+                  </tr>
+                  <tr>
+                    <td>Partial RoPE</td>
+                    <td>只对 25% 的 head_dim 施加旋转（256 维中的 64 维）</td>
+                    <td>保留部分非旋转通道承载与位置无关的信息</td>
+                  </tr>
+                  <tr>
+                    <td>RoPE 施加时机</td>
+                    <td><strong>在 concat 之前</strong>分别施加</td>
+                    <td>VLM 用 M-RoPE，专家用 1D RoPE，两者位置语义不同，必须分开加</td>
+                  </tr>
+                  <tr>
+                    <td>Qwen3.5 RMSNorm</td>
+                    <td><code>(1 + weight) * norm(x)</code>，weight 初始化为 0</td>
+                    <td>初始化即恒等映射，便于从预训练权重稳定起步</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">表 2 · Qwen3.5 骨干的关键机制（整理自代码文档字符串）。</p>
+
+            <h3 id="ll-attn">6.2 联合注意力：MoT 的交互规则</h3>
+
+            <p>
+              这是整个实现里最精妙的部分。VLM 有两种层类型，代码对它们采取<strong>完全不同的交互策略</strong>：
+            </p>
+
+            <div class="diagram">
+              <div class="dg-label">情况 A · VLM 层为 full_attention → 联合注意力</div>
+              <div class="dg-row">
+                <div class="dg-box hi">
+                  <div class="t">VLM 前缀</div>
+                  <div class="d">只看自己（因果掩码）。KV 被缓存复用。</div>
+                </div>
+                <div class="dg-box lo">
+                  <div class="t">动作后缀</div>
+                  <div class="d">
+                    K/V 拼接为 <code>[VLM_K | Expert_K]</code>，
+                    动作 token 既能看 VLM 前缀，也能在动作块内<strong>双向</strong>互看。
+                  </div>
+                </div>
+              </div>
+              <div class="dg-label">情况 B · VLM 层为 linear_attention → 独立处理</div>
+              <div class="dg-row">
+                <div class="dg-box hi">
+                  <div class="t">VLM 走 GatedDeltaNet</div>
+                  <div class="d">线性注意力层携带的是循环状态，不产生 KV cache，走标准前向。</div>
+                </div>
+                <div class="dg-box lo">
+                  <div class="t">专家走自注意力</div>
+                  <div class="d">只在后缀内部做自注意力，此层两塔之间<strong>不交互</strong>。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="code-title">modeling_tau_vla.py · forward 主循环（节选）</div>
+            <pre><code class="lang-py">if vlm_layer_type == "full_attention":
+    # === 联合注意力 ===
+    vlm_q, vlm_k, vlm_v, vlm_gate = vlm_layer(vlm_hidden, compute_kqv=True)
+    exp_q, exp_k, exp_v, exp_gate = expert_layer(expert_hidden, compute_kqv=True,
+                                                 ada_cond=ada_cond)
+    # RoPE 必须在 concat 之前分别施加：VLM=MRoPE，Expert=1D RoPE
+    vlm_q, vlm_k = apply_rotary_pos_emb(vlm_q_t, vlm_k_t, vlm_cos, vlm_sin)
+    exp_q, exp_k = apply_rotary_pos_emb(exp_q_t, exp_k_t, exp_cos, exp_sin)
+
+    # 前缀只看前缀；后缀能看 [前缀 | 后缀]
+    vlm_att = self.attention_interface(vlm_q, vlm_k, vlm_v,
+                                       mask_2d[:, :vlm_seq_len, :vlm_seq_len])
+    exp_key = torch.cat([vlm_k, exp_k], dim=1)
+    exp_val = torch.cat([vlm_v, exp_v], dim=1)
+    exp_att = self.attention_interface(exp_q, exp_key, exp_val, mask_2d_exp)
+
+elif vlm_layer_type == "linear_attention":
+    # === 独立处理：VLM 用 GatedDeltaNet，专家做自身的 full attention ===
+    vlm_hidden    = vlm_layer(vlm_hidden, attention_mask=vlm_pad_mask, past_key_values=None)
+    expert_hidden = ...  # 只对后缀做自注意力</code></pre>
+
+            <div class="note caution">
+              <span class="label">工程陷阱：为什么不能全用 FlashAttention-2</span>
+              <p>
+                代码里有一段明确的降级逻辑：VLA 的联合注意力需要<strong>非因果的 2D 掩码</strong>
+                （动作块内部要双向可见），而 FA2 无法直接接受显式 2D 掩码。
+                因此实现是：<em>VLM 单独前向（纯因果，VQA/FAST 路径）保留 FA2；VLA 联合路径降级为
+                带显式掩码的 SDPA</em>。
+              </p>
+              <p>
+                但作者又找回了一部分性能：当前缀确实是因果且右填充时，
+                <code>tau_vla_prefix_flash_backend=true</code> 会让<strong>前缀自注意力</strong>
+                走 <code>F.scaled_dot_product_attention(attn_mask=None, is_causal=True)</code>，
+                从而被 PyTorch 分派到 Flash 后端；后缀/动作注意力仍用显式掩码。
+                示例训练配置里这个开关是打开的。
+              </p>
+            </div>
+
+            <h3 id="ll-fm">6.3 条件流匹配：训练目标与采样</h3>
+
+            <p>
+              动作头不是自回归离散 token，也不是 DDPM，而是<strong>流匹配（flow matching）</strong>。
+              训练时的构造非常干净：
+            </p>
+
+            <div class="eq">
+              <span class="cmt"># 训练（loss_type = "fm"）</span><br />
+              t &nbsp; ~ &nbsp;0.999 · Beta(1.5, 1.0) + 0.001 &nbsp;&nbsp;<span class="cmt">// 时间步采样偏向小 t</span><br />
+              x<span class="sub">t</span> = t · ε + (1 − t) · a &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cmt">// ε~N(0,I)，a 为真实动作块</span><br />
+              u<span class="sub">t</span> = ε − a &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="cmt">// 目标速度场</span><br />
+              L &nbsp;= MSE( u<span class="sub">t</span>, v<span class="sub">θ</span>(x<span class="sub">t</span>, t, o, s, ℓ) ) &nbsp;&nbsp;<span class="cmt">// 也支持 L1（loss_type="L1_fm"）</span><br />
+              <br />
+              <span class="cmt"># 推理：反向欧拉积分，默认 num_steps = 10</span><br />
+              dt = −1 / num_steps ,&nbsp; x<span class="sub">1</span> = ε ,&nbsp; x<span class="sub">t+dt</span> = x<span class="sub">t</span> + dt · v<span class="sub">θ</span>(x<span class="sub">t</span>, t)
+            </div>
+
+            <p>
+              几个值得注意的实现细节：
+            </p>
+
+            <ul>
+              <li>
+                <strong>Beta(1.5, 1.0) 时间采样</strong>：<code>sample_beta(1.5, 1.0, ...)</code>
+                使采样偏向较小的 t（更接近干净动作的一侧），把训练算力集中在轨迹末段的精细化上。
+              </li>
+              <li>
+                <strong>后缀 token 布局</strong>：后缀 = <code>[state_emb] + [action_time_emb × H]</code>，
+                长度为 <code>n_action_steps + 1</code>。时间步通过正弦嵌入（周期 4e-3 ~ 4.0）
+                与动作嵌入拼接后过一个 SiLU MLP 融合。
+              </li>
+              <li>
+                <strong>后缀注意力掩码</strong>：<code>att_masks[:, :2] = True</code>，
+                其余为 False——即只有前两个位置构成因果边界，动作块内部是<strong>双向可见</strong>的。
+                这正是必须放弃纯 FA2 的原因。
+              </li>
+              <li>
+                <strong>可选 AdaNorm 时间条件</strong>：<code>adanorm_time=true</code> 时，
+                专家塔内的 RMSNorm 被替换为 <code>AdaRMSNorm</code>（FiLM 式 γ/β/gate 由时间嵌入生成，
+                三个线性层全部零初始化，保证起步时是恒等映射）。
+              </li>
+              <li>
+                <strong>KV cache 复用</strong>：VLM 前缀只前向一次，其 KV 被缓存；
+                10 步去噪循环中只有动作专家在反复前向（<code>fill_kv_cache=False</code>）。
+                这是流匹配 VLA 能跑到可用控制频率的关键。
+              </li>
+            </ul>
+
+            <h3 id="ll-mask">6.4 失活维度：一个被认真对待的细节</h3>
+
+            <p>
+              统一 40 维空间意味着任何单一本体都只激活其中一部分槽位。
+              那么<strong>失活维度在流匹配中该填什么</strong>？代码把这件事上升为一个显式的、必须训推一致的契约。
+            </p>
+
+            <div class="note code-truth">
+              <span class="label">两种方案（config: vla_inactive_input_zero）</span>
+              <p>
+                <strong>Scheme A（默认，false）</strong>：训练时失活维输入保持 <code>t·noise</code>；
+                采样时每一步把这些维重置为 <code>t·noise</code>。
+              </p>
+              <p>
+                <strong>Scheme C（true）</strong>：训练时把网络输入 <code>x_t</code> 在失活维上<strong>置零</strong>——
+                由于 dataloader 已把失活维的 action 置零，<code>x_t = t·ε + (1−t)·a</code> 在这些维上恰好恒等于 0。
+                这个"精确的 0 模式"本身就成了一个显式的 per-sample 掩码信号；
+                采样时每个积分步都重新置零。
+              </p>
+              <p>
+                <strong>两者必须在一个 checkpoint 的训练与推理之间保持一致。</strong>
+                示例配置 <code>configs/example_agibot_world_gong/train.yaml</code> 使用
+                <code>vla_inactive_input_zero: true</code>，即 Scheme C。
+              </p>
+            </div>
+
+            <p>
+              代码注释解释了为什么必须干预：自由的欧拉积分会让失活维通过<strong>无监督的速度分量</strong>
+              漂移出分布（OOD），进而通过共享的 <code>action_in_proj</code> 嵌入层污染有效维度。
+              所以每一步都要把它们"钉回"训练时见过的输入分布。
+            </p>
+
+            <div class="code-title">modeling_tau_vla.py · sample_actions 去噪循环（节选）</div>
+            <pre><code class="lang-py">while time &gt;= -dt / 2:
+    if inactive_mask is not None:
+        if zero_inactive:                    # Scheme C
+            x_t = x_t * inactive_mask
+        else:                                # Scheme A
+            x_t = x_t * inactive_mask + (time * noise) * (1 - inactive_mask)
+    v_t = self.predict_velocity(state, prefix_pad_masks, past_key_values,
+                                x_t, time.expand(bsize))
+    x_t = x_t + dt * v_t
+    time += dt
+if inactive_mask is not None:
+    x_t = x_t * inactive_mask   # t=0 终点：两种方案下失活维都落在 0</code></pre>
+
+            <p>
+              损失侧也有对应处理：<code>use_action_mask_loss=true</code> 时，
+              loss 只在激活维上平均（<code>fm_losses * mask / active_dims</code>），
+              并带有一个 <code>_SPIKE_THRESH = 100.0</code> 的 per-sample 裁剪与告警，
+              防止个别脏样本炸掉梯度。
+            </p>
+          </section>
+
+          <!-- ---------- 07 统一 40 维 ---------- -->
+          <section id="unified">
+            <h2><span class="h-num">07</span>统一 40 维状态/动作空间</h2>
+            <p class="section-lede">
+              论文一句"shared 40-dimensional interface"，在实现里是一份非常严格的契约。
+              来源：<code>src/tau0_vla/adapters/README.md</code>、<code>data/robots/unified.py</code>。
+            </p>
+
+            <p>
+              跨本体训练的核心难题是：固定基座单臂、双臂、移动底盘的状态与控制维度各不相同。
+              τ₀-VLA 的做法是定义一个固定的 40 维语义槽位表，每个本体把自己可用的维度
+              <strong>散射（scatter）</strong>进去，并把用不到的槽位<strong>掩码掉</strong>。
+            </p>
+
+            <div class="dg-label">UNIFIED_LAYOUT · 40 维语义槽位（下例高亮为 g1_agibot_36 路线实际激活的 16 维）</div>
+            <div class="slots">
+              <div class="slot"><span class="rng">0:3</span><span class="nm">左 EEF 位置 xyz（米）</span></div>
+              <div class="slot"><span class="rng">3:9</span><span class="nm">左 EEF 姿态（rot6D）</span></div>
+              <div class="slot"><span class="rng">9:12</span><span class="nm">右 EEF 位置 xyz</span></div>
+              <div class="slot"><span class="rng">12:18</span><span class="nm">右 EEF 姿态（rot6D）</span></div>
+              <div class="slot act"><span class="rng">18</span><span class="nm">左夹爪</span></div>
+              <div class="slot act"><span class="rng">19</span><span class="nm">右夹爪</span></div>
+              <div class="slot"><span class="rng">20:22</span><span class="nm">腰部（≤2）</span></div>
+              <div class="slot"><span class="rng">22:24</span><span class="nm">底盘速度（≤2）</span></div>
+              <div class="slot act"><span class="rng">24:32</span><span class="nm">左臂关节 0–7（弧度）</span></div>
+              <div class="slot act"><span class="rng">32:40</span><span class="nm">右臂关节 0–7（弧度）</span></div>
+            </div>
+            <div class="legend">
+              <span><i style="background: rgba(79, 209, 197, 0.5)"></i>该路线激活（mask=1）</span>
+              <span><i style="background: var(--bg-soft); border: 1px solid var(--border)"></i>失活（mask=0，值恒为 0）</span>
+            </div>
+
+            <p>
+              关节数少于 8 的手臂占用其区块的低位槽位，剩余槽位<strong>精确为 0 且掩码为 0</strong>。
+              以官方 <code>g1_agibot_36</code> 路线为例，槽位 31 与 39 就是未使用的第 8 关节位。
+            </p>
+
+            <h3>EEF 与关节的互斥路由</h3>
+
+            <div class="note">
+              <span class="label">防止同一运动被表示两次</span>
+              <p>路由规则<strong>逐样本</strong>评估：</p>
+              <ul>
+                <li>样本存在原生 EEF 值 → <strong>EEF 槽位激活，手臂关节槽位被掩码掉</strong>；</li>
+                <li>不存在 EEF 值 → EEF 槽位掩码掉，手臂关节作为<strong>回退</strong>；</li>
+                <li>夹爪、腰部、底盘速度的掩码<strong>独立</strong>于上述选择。</li>
+              </ul>
+              <p>
+                注意实现上的一个明确边界：公开的 G1 路线是<strong>关节控制</strong>的，
+                它们不提供 URDF，也<strong>绝不</strong>从关节反推 EEF 位姿。
+                原生 EEF 是适配器的输入，不是 FK 的结果。
+              </p>
+            </div>
+
+            <h3>相对动作：手臂/EEF 相对当前状态</h3>
+
+            <p>正向数据流水线（unified 路线）的顺序是固定的，任何一步改动都必须重算归一化统计：</p>
+
+            <div class="code-title">正向：native → 模型输入</div>
+            <pre><code class="lang-text">native flat state/action
+    → 适配器 registry 散射到 40D
+    → 选择原生 EEF 或关节回退
+    → 构建 state_mask 与 action_mask
+    → 手臂/EEF 动作转为相对当前状态
+    → 用 per-embodiment 的 40D 统计归一化
+    → 失活槽位置零</code></pre>
+
+            <p>相对化的具体规则：</p>
+            <ul>
+              <li><strong>手臂关节</strong>：<code>action − state</code>（关节增量）；</li>
+              <li><strong>EEF 位置</strong>：<em>体坐标系</em>下的位置增量；</li>
+              <li><strong>EEF 姿态</strong>：相对旋转，表示为 rot6D；</li>
+              <li><strong>夹爪、腰部、底盘速度</strong>：保持<strong>绝对值</strong>。</li>
+            </ul>
+
+            <p>
+              这也解释了部署时一个容易踩的坑：反变换需要<strong>绝对的、未归一化的、已散射的 40 维状态</strong>
+              （<code>encode_payload</code> 返回的 <code>state_abs</code>），
+              而不是归一化后的模型输入 <code>state</code>。传错会得到错误的绝对动作。
+            </p>
+
+            <div class="code-title">逆向：模型输出 → native</div>
+            <pre><code class="lang-text">model output
+    → 反归一化 unnormalize
+    → 恢复绝对手臂/EEF 动作 unrelative
+    → EEF rot6d → xyz + quat_xyzw
+    → 收集激活的语义切片 gather</code></pre>
+
+            <p>
+              收集顺序是<strong>规范化的</strong>：
+              <code>left_eef, right_eef, left_gripper, right_gripper, waist, chassis_velocity, left_arm, right_arm</code>。
+              但这不一定等于 SDK 的原生列顺序——例如 <code>g1_a2d_joint_unified</code> 恢复出的顺序是
+              <code>[左夹爪, 右夹爪, 左臂×7, 右臂×7]</code>，而 A2D SDK 期望
+              <code>[左臂×7, 右臂×7, 左夹爪, 右夹爪]</code>。
+              这层重排由 <code>build_sdk_action_perm</code> 从 registry 的 <code>action_groups</code> 构造并校验。
+            </p>
+
+            <div class="note caution">
+              <span class="label">这里有一个诚实的工程限制</span>
+              <p>
+                <code>g1_agibot_36</code> 和 <code>g1_daas_36</code> 的原生动作向量<strong>存在空洞</strong>：
+                前者只控制原生列 <code>0</code>、<code>1</code> 和 <code>16:30</code>，
+                而 36 维 SDK 向量还包含 <code>2:16</code> 与 <code>30:36</code>。
+                策略并未定义这些空洞的值，所以<strong>单靠一个置换无法安全构造完整的 36 维指令</strong>。
+                官方给出的处置是：这两个布局请用语义化的 <code>/act</code> 端点，
+                只有映射完整且连续的布局（如 <code>g1_a2d_joint_unified</code>）才可用扁平的
+                <code>/act_lerobot_bytes</code>。
+              </p>
+            </div>
+          </section>
+
+          <!-- ---------- 08 数据与训练 ---------- -->
+          <section id="data">
+            <h2><span class="h-num">08</span>数据与训练配方</h2>
+            <p class="section-lede">
+              40,115 小时是怎么用的，以及一份可跑通的后训练配置长什么样。
+            </p>
+
+            <h3>预训练：异构真机 + 多模态共训练</h3>
+
+            <p>论文对训练策略的表述包含三个层次，顺序不能颠倒：</p>
+
+            <ol class="timeline">
+              <li>
+                <div class="st">Stage 1</div>
+                <div class="sb">40,115 小时异构真机经验 + 多模态数据共训练</div>
+                <p>
+                  目标是建立一个<strong>跨任务、跨本体的共享预训练基础</strong>。
+                  多模态共训练（VQA 等）保留语言与视觉的语义能力，避免动作训练把骨干"训窄"。
+                </p>
+              </li>
+              <li>
+                <div class="st">Stage 2</div>
+                <div class="sb">每个部署场景单独微调</div>
+                <p>
+                  论文明确说"Each deployment is then fine-tuned separately for its target setting"。
+                  ARX 与 Franka 的 rollout 展示的就是这些各自适配后的策略。
+                </p>
+              </li>
+              <li>
+                <div class="st">Stage 3</div>
+                <div class="sb">高层策略的记忆扰动训练</div>
+                <p>
+                  在已有演示上扰动派生记忆，学习 advance / roll back / retry 行为（见 §5）。
+                </p>
+              </li>
+            </ol>
+
+            <h3>数据格式：LeRobot v3.0 + 三层标注</h3>
+
+            <p>
+              实现只读 <strong>LeRobot v3.0</strong>（v2.1 需先用 LeRobot 工具转换）。
+              除标准字段外，长时序训练依赖一套<strong>分层指令标注</strong>，这是分层方法能落地的数据前提：
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>标签</th>
+                    <th>来源字段</th>
+                    <th>粒度</th>
+                    <th>用途</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>l1</code></td>
+                    <td><code>high_level_instruction</code></td>
+                    <td>episode 级，一条字符串</td>
+                    <td>整段任务指令；<strong>只能作 prompt 来源，不能作帧过滤器</strong></td>
+                  </tr>
+                  <tr>
+                    <td><code>l2</code></td>
+                    <td><code>key_frame</code> 中的 SubTask Frame</td>
+                    <td>子任务区间</td>
+                    <td>子任务边界；无 l2 时回退到 l3</td>
+                  </tr>
+                  <tr>
+                    <td><code>l3</code></td>
+                    <td><code>instruction_segments</code></td>
+                    <td>帧级区间（<code>end_frame_index</code> 独占）</td>
+                    <td>细粒度子任务指令，低层策略的主要训练信号</td>
+                  </tr>
+                  <tr>
+                    <td><code>error_frame</code></td>
+                    <td><code>key_frame</code> 中的 Error Frame</td>
+                    <td>无效区间</td>
+                    <td>负向过滤，剔除失败片段</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">
+              表 3 · 三层指令标注。<code>frame_type_name</code> 会被归一化（去非字母数字、转小写）后匹配。
+            </p>
+
+            <div class="note code-truth">
+              <span class="label">一个防止标签漂移的设计</span>
+              <p>
+                <code>l3</code> 策略不只要求锚点帧落在指令区间内，还要求<strong>整个 action horizon 的尾部也留在同一区间内</strong>。
+                否则会出现"prompt 说倒奶、但动作块的后半段已经在盖盖子"这种 prompt 与监督目标漂移的脏样本。
+              </p>
+            </div>
+
+            <h3>Prompt 模板与控制模式改写</h3>
+
+            <p>低层策略的 prompt 是结构化的，示例配置里的模板是：</p>
+
+            <div class="code-title">configs/example_agibot_world_gong/data.py</div>
+            <pre><code class="lang-py">def _robot_prompt(robot_type: str, control_mode: str) -> str:
+    return (
+        "You are controlling a robot.\n"
+        f"Robot type: {robot_type}\n"
+        f"Control mode: {control_mode}\n"
+        "Whole-body control: disabled\n"
+        "Task: {instruction}"
+    )</code></pre>
+
+            <p>
+              加上多相机视角标签模板 <code>"{} view: &lt;image&gt;"</code>（head / left wrist / right wrist），
+              于是模型看到的是"本体类型 + 控制模式 + 各视角图像 + 子任务文本"。
+              统一混合控制训练时，prompt 中那一行 <code>Control mode:</code> 会
+              <strong>根据样本实际的动作路由被改写</strong>为 <code>eef</code> 或 <code>joint</code>——
+              这让同一个模型能在两种控制模式间条件化切换。
+            </p>
+
+            <h3>一份可跑通的后训练配置</h3>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>配置项</th><th>值</th><th>说明</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>vlm_model_type</code></td><td><code>qwen3.5</code></td><td>选择 Qwen3.5 的 M-RoPE 索引函数</td></tr>
+                  <tr><td><code>vla_model_type</code></td><td><code>tau0_vla</code></td><td>启用流匹配动作专家</td></tr>
+                  <tr><td><code>tune_mm_vision / mlp / llm</code></td><td>全部 <code>true</code></td><td>后训练时视觉、投影器、语言层全开</td></tr>
+                  <tr><td><code>tune_vla_dit</code></td><td><code>true</code></td><td>动作专家与各投影层可训</td></tr>
+                  <tr><td><code>num_steps</code></td><td><code>10</code></td><td>流匹配推理去噪步数</td></tr>
+                  <tr><td><code>action_horizon</code></td><td><code>30</code></td><td>动作块长度 H</td></tr>
+                  <tr><td><code>camera_keys</code></td><td>head, wrist_left, wrist_right</td><td>顺序即 VLM 的视角顺序，必须与部署一致</td></tr>
+                  <tr><td><code>max_pixels / min_pixels</code></td><td><code>50176 / 3136</code></td><td>图像先 <code>ResizeWithPad(224,224)</code></td></tr>
+                  <tr><td><code>vla_max_token_len</code></td><td><code>2048</code></td><td>前缀 token 预算</td></tr>
+                  <tr><td><code>learning_rate</code></td><td><code>2.0e-5</code>，cosine，warmup 1%</td><td>bf16 + DeepSpeed ZeRO-1</td></tr>
+                  <tr><td><code>padding_side</code></td><td>必须 <code>right</code></td><td>联合注意力掩码与 RoPE position_ids 均假设右填充</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">
+              表 4 · 官方 AgiBot World 示例后训练配置要点（<code>configs/example_agibot_world_gong/train.yaml</code>）。
+              参考环境：Python 3.11 / CUDA 12.8 / PyTorch 2.7.1。
+            </p>
+
+            <p>数据增强很克制：只有一个 <code>ColorJitter</code>，且推理时随机性被关闭：</p>
+
+            <div class="code-title">图像变换（训练/推理共用同一 spec）</div>
+            <pre><code class="lang-py">_IMAGE_TRANSFORMS = [
+    ColorJitter(prob=0.33, brightness=0.3, contrast=0.4, saturation=0.5, hue=0.03),
+    ResizeWithPad(224, 224),
+]</code></pre>
+          </section>
+
+          <!-- ---------- 09 结果 ---------- -->
+          <section id="results">
+            <h2><span class="h-num">09</span>实验结果</h2>
+            <p class="section-lede">
+              全部为<strong>实机</strong>结果。每个任务 10 次物理试验。
+            </p>
+
+            <h3 id="res-real">9.1 四项长时序实机任务</h3>
+
+            <p>评测任务覆盖 13–25 个有序步骤，episode 最长约 12 分钟：</p>
+
+            <div class="cards">
+              <div class="card">
+                <span class="tag">25 steps</span>
+                <h4>Clean Room 打扫房间</h4>
+                <p>移动、收衣服、挂包、递毯子、扔垃圾。步骤最多，且需要导航。</p>
+              </div>
+              <div class="card">
+                <span class="tag">14 steps</span>
+                <h4>Prepare Ingredients 备菜</h4>
+                <p>食材准备，涉及物体搜寻与铰接交互。</p>
+              </div>
+              <div class="card">
+                <span class="tag">22 steps</span>
+                <h4>Tomato &amp; Egg Stir Fry 番茄炒蛋</h4>
+                <p>烹饪任务，需要工具使用。基线全部为 0/10 的最难任务。</p>
+              </div>
+              <div class="card">
+                <span class="tag">13 steps</span>
+                <h4>Make Milk Tea 做奶茶</h4>
+                <p>倒奶、倒茶、加小料、盖盖、插吸管。末端是接触密集型精细操作。</p>
+              </div>
+            </div>
+
+            <p>
+              这些任务共同要求：导航、物体搜寻、铰接交互、工具使用、烹饪，
+              以及<strong>从不完美执行中恢复</strong>。主结果如下（两个 τ₀-VLA 设置使用<em>相同</em>的低层策略，且均未开启 beam search）：
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th class="num">Clean Room</th>
+                    <th class="num">Prepare Ingr.</th>
+                    <th class="num">Stir Fry</th>
+                    <th class="num">Milk Tea</th>
+                    <th class="num">平均</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>GR00T N1.7</td>
+                    <td class="num">0 / 10</td><td class="num">1 / 10</td><td class="num">0 / 10</td><td class="num">0 / 10</td>
+                    <td class="num">2.5%</td>
+                  </tr>
+                  <tr>
+                    <td>LingBot-VLA</td>
+                    <td class="num">0 / 10</td><td class="num">0 / 10</td><td class="num">0 / 10</td><td class="num">0 / 10</td>
+                    <td class="num">0.0%</td>
+                  </tr>
+                  <tr>
+                    <td>π<sub>0.5</sub></td>
+                    <td class="num">4 / 10</td><td class="num">2 / 10</td><td class="num">0 / 10</td><td class="num">3 / 10</td>
+                    <td class="num">22.5%</td>
+                  </tr>
+                  <tr class="ours">
+                    <td>τ₀-VLA（直接执行）</td>
+                    <td class="num">4 / 10</td><td class="num">2 / 10</td><td class="num">0 / 10</td><td class="num">5 / 10</td>
+                    <td class="num">27.5%</td>
+                  </tr>
+                  <tr class="best">
+                    <td>τ₀-VLA（分层系统, Plan Once）</td>
+                    <td class="num">5 / 10</td><td class="num">4 / 10</td><td class="num">4 / 10</td><td class="num">5 / 10</td>
+                    <td class="num">45.0%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">
+              表 5 · 四项长时序实机任务成功率（数据来自项目主页）。
+            </p>
+
+            <div class="note">
+              <span class="label">这张表里最重要的一格</span>
+              <p>
+                <strong>Stir Fry：所有基线以及 τ₀-VLA 直接执行都是 0/10，分层系统是 4/10。</strong>
+                在一个 22 步的烹饪任务上，"平坦"策略的成功率是硬零——
+                这不是精度问题，而是根本无法维持长程的阶段一致性。
+                这一格比平均值 27.5%→45.0% 更能说明分层的必要性。
+              </p>
+              <p>
+                与此对照，Milk Tea 上分层与直接执行<strong>同为 5/10</strong>。
+                13 步、流程线性、且瓶颈在末端接触密集操作（盖盖、插吸管）——
+                这种任务上高层规划帮不上忙，因为失败点在低层执行能力。
+                <em>分层的收益与任务的"步骤数 × 分支复杂度"正相关，而不是普适的。</em>
+              </p>
+            </div>
+
+            <p>
+              论文对提升来源的归因很克制：差异在于<strong>低层策略如何被引导</strong>。
+              直接执行让每个动作都以完整任务指令为条件，策略必须在整段 episode 中自行推断当前阶段；
+              分层执行则提供一个从最新观测与执行记忆中选出的<strong>有界子任务</strong>。
+              因此提升反映的是"显式跟踪进度并决定下一步"，而<strong>不是执行策略本身的变化</strong>。
+            </p>
+
+            <h3 id="res-ttc">9.2 决策质量：TTC 的增量收益</h3>
+
+            <p>
+              这组实验在 Make Milk Tea、Clean Room 以及 Book Organization（分域内 / 域外）上评估<strong>下一子任务准确率</strong>。
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>高层决策方式</th>
+                    <th class="num">Book Organization（域外布局）下一子任务准确率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Plan Once</td><td class="num">50.0%</td></tr>
+                  <tr><td>Best-of-N</td><td class="num">57.5% <span class="delta-up">+7.5</span></td></tr>
+                  <tr class="best"><td>TTC（后果预测 + 反思）</td><td class="num">74.0% <span class="delta-up">+24.0</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">表 6 · 分布偏移下的决策质量。TTC 的优势在此最为明显。</p>
+
+            <p>决策质量的提升可以传导到物理执行。在<strong>低层策略固定</strong>的条件下：</p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>任务</th><th class="num">Plan Once</th><th class="num">TTC</th><th class="num">Δ</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Milk Tea</td><td class="num">5 / 10</td><td class="num">7 / 10</td><td class="num delta-up">+2</td></tr>
+                  <tr><td>Book Organization</td><td class="num">6 / 10</td><td class="num">9 / 10</td><td class="num delta-up">+3</td></tr>
+                  <tr><td>Clean Room</td><td class="num">5 / 10</td><td class="num">7 / 10</td><td class="num delta-up">+2</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">表 7 · TTC 对实机成功率的影响（低层策略不变）。</p>
+
+            <div class="note caution">
+              <span class="label">进度指标揭示的真实瓶颈</span>
+              <p>
+                在 Milk Tea 上，Plan Once 与 TTC 两个变体的平均序列完成度都已超过 <strong>91%</strong>，
+                TTC 把进度推到 <strong>95.38%</strong>。剩余失败集中在<strong>盖盖子与插吸管</strong>。
+              </p>
+              <p>
+                这个数字很有价值：它说明在这类任务上，<em>高层规划已经接近饱和，
+                真正的剩余瓶颈是末端接触密集型操作（contact-rich manipulation）的低层能力</em>。
+                论文自己也是这么定性的。继续加 TTC 算力不会解决盖盖子的问题。
+              </p>
+            </div>
+
+            <h3 id="res-cross">9.3 跨本体：同一低层策略的迁移</h3>
+
+            <p>
+              除长时序任务外，论文还在两个不同构型的平台上评测了共享低层策略（较短的任务）：
+            </p>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>平台</th><th>构型</th><th>任务</th><th class="num">步骤</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>ARX AC One</td><td>移动式</td><td>Collect Laundry 收衣服</td><td class="num">5</td></tr>
+                  <tr><td>Franka</td><td>固定基座</td><td>Tidy Makeup Table 整理化妆台</td><td class="num">8</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">
+              表 8 · 跨本体评测。二者共享同一预训练基础，各自单独微调。
+              这验证了统一 40 维接口（§7）在实践中确实支撑了跨构型适配。
+            </p>
+          </section>
+
+          <!-- ---------- 10 推理部署 ---------- -->
+          <section id="infer">
+            <h2><span class="h-num">10</span>推理与部署工程</h2>
+            <p class="section-lede">
+              一个流匹配 VLA 要跑到可用频率，工程量不小。这一节整理开源实现中的优化手段与明确的能力边界。
+            </p>
+
+            <h3>推理延迟优化：CUDA Graph + torch.compile</h3>
+
+            <p>
+              流匹配推理的结构是"1 次昂贵的 VLM 前缀前向 + N 次廉价的专家前向"。
+              代码对两段分别做了不同的优化：
+            </p>
+
+            <div class="diagram">
+              <div class="dg-label">静态形状优化路径（需设置 max_prefix_len &gt; 0）</div>
+              <div class="dg-row">
+                <div class="dg-box hi">
+                  <div class="t">前缀 → CUDA Graph</div>
+                  <div class="d">
+                    前缀右填充到 <code>max_prefix_len</code> 得到固定形状，
+                    配合预分配的 <code>StaticKVCache</code> 捕获成 CUDA Graph，之后仅 replay。
+                  </div>
+                </div>
+                <div class="dg-box lo">
+                  <div class="t">去噪循环 → torch.compile</div>
+                  <div class="d">
+                    <code>_predict_velocity_core</code> 剥离了计时与 <code>getattr</code>，
+                    以 <code>mode="reduce-overhead"</code> 编译。
+                  </div>
+                </div>
+              </div>
+              <div class="dg-arrow">↓ 若 max_prefix_len = 0 ↓</div>
+              <div class="dg-row">
+                <div class="dg-box">
+                  <div class="t">动态形状回退路径</div>
+                  <div class="d">使用 <code>DynamicKVCache</code> 与原始 eager 循环，不做编译优化。</div>
+                </div>
+              </div>
+            </div>
+
+            <p>代码注释里记录了几条容易踩的细节，很有参考价值：</p>
+
+            <ul>
+              <li>
+                <strong>只为 full_attention 层分配 KV 缓存。</strong>
+                <code>linear_attention</code>（GatedDeltaNet）层携带的是循环状态，从不使用 KV cache，
+                所以 <code>StaticKVCache</code> 在这些槽位放 <code>None</code>——既省显存，
+                又保持 <code>key_cache</code> 为一个按全局 <code>layer_idx</code> 索引的 <code>list</code>，
+                使 Dynamo 对缓存的处理方式不变。
+              </li>
+              <li>
+                <strong>捕获前必须在侧流上 warmup 3 次。</strong>
+                这是为了让 cuBLAS/cuDNN 的 autotune 与分配器的惰性初始化在捕获之前完成，
+                否则这些一次性开销会被录进图里。
+              </li>
+              <li>
+                <strong>不能在静态路径上做数据相关的 host 同步。</strong>
+                代码特意注明：线性注意力掩码处不做 <code>torch.all(mask == 1)</code> 短路判断，
+                因为那是一次数据相关的 host sync，会破坏 CUDA Graph 捕获与 <code>torch.compile</code>。
+              </li>
+              <li>
+                <strong>warmup 与 capture 必须执行字节一致的代码。</strong>
+                因此二者共用同一个 <code>_prefix_forward_core</code> 定义——
+                两份不同步的副本会让 capture 录到与 warmup 不同的算子。
+              </li>
+            </ul>
+
+            <h3>服务端接口</h3>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>端点</th><th>输入</th><th>输出</th><th>适用</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>POST /act</code></td>
+                    <td>规范化 <code>{prompt, images, state, meta}</code></td>
+                    <td>按名称索引的<strong>语义</strong>动作字典</td>
+                    <td>推荐；<code>g1_agibot_36</code>、<code>g1_daas_36</code> 必须用它</td>
+                  </tr>
+                  <tr>
+                    <td><code>POST /act_lerobot_bytes</code></td>
+                    <td>本体 SDK 原生 payload</td>
+                    <td>扁平的位置化动作块（嵌套数值列表）</td>
+                    <td>仅限映射完整连续的布局，如 <code>g1_a2d_joint_unified</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>GET /health</code></td>
+                    <td>—</td>
+                    <td>健康检查</td>
+                    <td>—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tbl-cap">表 9 · 策略服务端点。</p>
+
+            <div class="note caution">
+              <span class="label">三个必须知道的边界</span>
+              <ul>
+                <li>
+                  <strong>公开 v1 仅支持关节控制。</strong>原生 EEF 数据<em>可以</em>用于训练，
+                  但 EEF 服务在本次发布中不被支持——服务端会<strong>拒绝</strong>含 EEF 动作切片的路由。
+                  为适配器加上 EEF 掩码或恢复逻辑，并不会让它变成受支持的服务路由。
+                </li>
+                <li>
+                  <strong>请求体是 Python pickle。</strong>对不可信输入反序列化是不安全的。
+                  服务默认绑定 <code>127.0.0.1</code>；只应在可信的隔离网络内对外暴露。
+                </li>
+                <li>
+                  <strong>prompt 不要预先套模板。</strong><code>/act</code> 的
+                  <code>payload["prompt"]</code> 应传<em>原始任务文本</em>，
+                  <code>encode_payload</code> 会应用已保存的模板；传已套好模板的文本会被<strong>套两层</strong>。
+                </li>
+              </ul>
+            </div>
+
+            <h3>Checkpoint 自带部署契约</h3>
+
+            <p>
+              一个值得学习的设计：checkpoint 里存了一份 <strong>Data Spec</strong>，
+              记录 <code>robot_name</code>、registry key、config modules、相机、prompt、维度与归一化契约。
+              部署时用它反解回当前安装的适配器/registry 代码，从而<strong>由构造保证</strong>
+              训练时声明的每一个变换（prompt 模板、图像 resize、状态流水线）在推理时都被应用，不会被静默跳过。
+            </p>
+
+            <div class="code-title">deploy/policy.py · 三行推理</div>
+            <pre><code class="lang-py">encoded     = encode_payload(payload, self.data_spec)
+raw_action  = self.model.sample_action(self._tokenize_vlm(encoded))
+# 相对→绝对的逆变换需要 state_abs（绝对、未归一化、已散射的 40D），不是归一化的 state
+restore_state = encoded.get("state_abs", encoded["state"])
+return {"actions": restore_action(raw_action, self.data_spec, state=restore_state)}</code></pre>
+
+            <p>
+              同时 <code>robot_name</code> 与 registry key 被视为
+              <strong>checkpoint 标识符，训练后不得重命名或改变列含义</strong>——
+              否则老权重会被静默错配。仓库里还提供了 <code>check_parity.py</code>
+              用于比对本地推理与服务端推理的一致性。
+            </p>
+          </section>
+
+          <!-- ---------- 11 复现 ---------- -->
+          <section id="repro">
+            <h2><span class="h-num">11</span>复现路径</h2>
+            <p class="section-lede">
+              从零到跑通一次后训练 + 开环评测的最短路径。
+            </p>
+
+            <div class="code-title">1 · 环境（Python 3.11 / CUDA 12.8 / PyTorch 2.7.1）</div>
+            <pre><code class="lang-bash">git clone git@github.com:sii-research/tau-0-vla.git
+cd tau-0-vla
+bash scripts/setup.sh</code></pre>
+
+            <div class="code-title">2 · 在自带的 AgiBot World 子集上后训练</div>
+            <pre><code class="lang-bash"># example_data/ 是 “Strike the gong” 子集（LeRobot v3.0 格式）
+bash scripts/train.sh configs/example_agibot_world_gong/train.yaml \
+    --model_name_or_path /path/to/tau-0-vla-checkpoint</code></pre>
+
+            <div class="code-title">3 · 起服务 + 开环评测</div>
+            <pre><code class="lang-bash">python -m deploy.server --model outputs/&lt;run_name&gt;
+
+python deploy/openloop.py --ckpt outputs/&lt;run_name&gt; --no-plot</code></pre>
+
+            <details>
+              <summary>换成自己的数据集 / 机器人：完整链条</summary>
+              <p>
+                从 <code>configs/_template/</code> 与
+                <code>src/tau0_vla/adapters/_template/</code> 出发。官方要求的顺序是：
+              </p>
+              <pre><code class="lang-text">dataset + SDK 契约
+  → layout.py（+ 可选的 unified registry 条目）
+  → 适配器导出与 robot 类注册
+  → 配套的 data.py + train.yaml + 归一化统计
+  → deploy_io.py
+  → dataset / SDK 一致性与动作顺序校验</code></pre>
+              <p>其中归一化统计必须与训练配置严格一致，且改动任何映射后都要重算：</p>
+              <pre><code class="lang-bash">PYTHONPATH=src:. python3 scripts/norm_stats/compute_unified_ft_stats.py \
+    --body YOUR_UNIFIED_ROBOT_NAME --action-horizon YOUR_HORIZON \
+    --repos /path/to/dataset \
+    --positive-labels YOUR_POSITIVE_LABELS \
+    --negative-labels YOUR_NEGATIVE_LABELS \
+    --partials-dir /tmp/tau0_stats
+
+PYTHONPATH=src:. python3 scripts/norm_stats/merge_stats.py \
+    --partials /tmp/tau0_stats --out /path/to/norm_stats.json</code></pre>
+              <div class="note caution">
+                <span class="label">merge 步骤检测不到的东西</span>
+                <p>
+                  merge 会校验 horizon 与正/负过滤器在各 partial 间的兼容性，
+                  但它<strong>无法检测适配器映射被改动</strong>。
+                  任何映射、变换或掩码的改动之后都必须重算统计，否则会得到一个"能训练但学错了"的模型。
+                </p>
+              </div>
+              <p>此外几条硬性约束：</p>
+              <ul>
+                <li>纯关节路线<strong>止步于关节映射，不要加 FK</strong>；</li>
+                <li>相机名、左右语义、顺序、数量必须在适配器、Image spec、YAML、部署四处完全一致；</li>
+                <li>一个 Data Spec 内所有固定 <code>ResizeWithPad</code> 的目标尺寸必须相同；</li>
+                <li>unified 路线不要设置 <code>temporal_sequence["state"]</code>（相对动作要求单帧状态）。</li>
+              </ul>
+            </details>
+          </section>
+
+          <!-- ---------- 12 评述 ---------- -->
+          <section id="discuss">
+            <h2><span class="h-num">12</span>评述：贡献、边界与未解问题</h2>
+            <p class="section-lede">
+              作为阅读报告，这一节给出我的判断，与论文自身的表述分开。
+            </p>
+
+            <h3>真正的贡献在哪</h3>
+
+            <ol>
+              <li>
+                <strong>把测试时计算落到了一个正确的抽象层级。</strong>
+                LLM 的 TTC 之所以能做，是因为有"token 序列"这个天然的搜索空间。
+                机器人一直缺这个空间。论文论证并利用了"子任务"的三个性质（稀疏、语义对齐、视觉可评估），
+                这个论证本身比具体的实现方案更有价值。
+              </li>
+              <li>
+                <strong>世界模型的用途被收窄到了它擅长的地方。</strong>
+                视频世界模型做长程 rollout 目前仍不可靠，但论文只要求它预测<em>单个子任务执行后的视觉后果</em>——
+                短程、有明确语义边界、且结果只需被价值模型粗粒度打分。这是一个务实的用法。
+              </li>
+              <li>
+                <strong>用扰动演示替代纠错数据采集。</strong>
+                这是我认为整篇论文中工程性价比最高的一招（§5）。
+                纠错数据的采集成本几乎是长时序机器人学习的一道墙，而成功演示天然携带正确进度记录这一监督信号。
+              </li>
+              <li>
+                <strong>消融设计是干净的。</strong>
+                27.5% → 45.0% 的对比中低层策略完全不变，
+                TTC 的对比中低层策略也完全固定。这让"提升来自哪一层"这个问题有了明确答案。
+              </li>
+            </ol>
+
+            <h3>需要谨慎看待的地方</h3>
+
+            <div class="cards">
+              <div class="card">
+                <span class="tag">统计功效</span>
+                <h4>每任务 10 次试验</h4>
+                <p>
+                  4/10 与 5/10 之间的差异在统计上几乎没有意义。
+                  真正稳健的信号是"0/10 → 4/10"（Stir Fry）这类量级跃变，
+                  以及平均值上 22.5%→45.0% 的整体趋势。逐格解读单个任务需要克制。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">成本未量化</span>
+                <h4>TTC 的实际延迟代价</h4>
+                <p>
+                  论文给出了"精度随算力饱和"的定性曲线，也说明置信度路由降低了平均成本，
+                  但公开材料中我没有看到<strong>绝对的延迟数字</strong>：
+                  一次 TTC 决策要多少秒？在 12 分钟的任务里累计停顿多久？这对实际部署至关重要。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">组件不透明</span>
+                <h4>世界模型与价值模型的细节</h4>
+                <p>
+                  项目主页只说"用世界模型预测后果、用价值模型打分"。
+                  这两个模型的架构、训练数据、预测的时间跨度、以及价值模型如何避免被
+                  world model 的幻觉误导——在公开材料中都不清晰。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">开源范围</span>
+                <h4>仓库只有低层策略</h4>
+                <p>
+                  这一点必须说清：<strong>开源仓库实现的是低层通才 VLA</strong>
+                  （Qwen3.5 + 流匹配动作专家 + 统一 40 维接口 + 部署栈）。
+                  高层策略、世界模型、价值模型、TTC 搜索与记忆修正，
+                  在当前公开代码中<strong>没有对应实现</strong>。§6–§8 的代码级细节都属于低层部分。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">发布限制</span>
+                <h4>EEF 服务不可用</h4>
+                <p>
+                  统一接口设计了完整的 EEF 通路且训练可用，但 v1 服务端明确拒绝 EEF 路由。
+                  想在 EEF 控制的机器人上部署，需要自己补齐这一段并自行验证。
+                </p>
+              </div>
+              <div class="card">
+                <span class="tag">依赖前提</span>
+                <h4>分层标注的成本</h4>
+                <p>
+                  整套方法依赖 <code>l2</code>/<code>l3</code> 级别的子任务区间标注
+                  （见表 3）。这类标注的获取成本，在论文的方法叙述中没有被计入代价，
+                  但对想复现的团队是实打实的门槛。
+                </p>
+              </div>
+            </div>
+
+            <h3>我认为最有意思的开放问题</h3>
+
+            <ul>
+              <li>
+                <strong>子任务边界能否被学出来，而不是被标注出来？</strong>
+                目前决策点由标注的子任务区间界定。若能自适应地决定"何时该重新决策"，
+                分层就不再依赖人工的任务分解粒度。
+              </li>
+              <li>
+                <strong>价值模型的评分对世界模型误差有多敏感？</strong>
+                如果世界模型对某个候选产生了乐观幻觉，价值模型会不会照单全收？
+                论文用真实观测闭环来纠偏，但那是<em>执行之后</em>的事——
+                而 TTC 的全部意义在于<em>执行之前</em>做对选择。
+              </li>
+              <li>
+                <strong>Milk Tea 揭示的瓶颈怎么破。</strong>
+                进度已到 95.38%，剩下的是盖盖子和插吸管。
+                这提示下一步的收益不在规划层，而在接触密集操作——
+                也许需要力/触觉模态，而这恰好是当前 40 维接口中<strong>没有</strong>的东西。
+              </li>
+            </ul>
+
+            <p>
+              论文自己给出的展望与此相容：把这个闭环扩展到更丰富的任务与更长的部署，
+              让机器人自主决定<strong>何时深思、如何验证结果、以及在小错误复合成任务级失败之前修正计划</strong>。
+              用论文的话说——对长时序机器人而言，这把指令跟随
+              <em>从"执行孤立的步骤"变成了"持续跟踪任务进度"</em>。
+            </p>
+          </section>
+
+          <!-- ---------- 13 资料 ---------- -->
+          <section id="refs">
+            <h2><span class="h-num">13</span>资料与术语</h2>
+
+            <h3>原始资料</h3>
+            <ul>
+              <li><a href="https://tau0-vla.github.io/tau0-vla.pdf" target="_blank" rel="noopener">论文 PDF</a> — τ₀-VLA: a Hierarchical Robot Foundation Model with World-Model-Guided Test-Time Computation</li>
+              <li><a href="https://tau0-vla.github.io/" target="_blank" rel="noopener">项目主页</a> — 含四项长时序任务的完整 rollout 视频</li>
+              <li><a href="https://github.com/sii-research/tau-0-vla" target="_blank" rel="noopener">官方实现</a> — 低层通才 VLA、数据流水线与部署栈</li>
+              <li><a href="https://huggingface.co/sii-research/tau-0-vla" target="_blank" rel="noopener">Hugging Face 权重</a> — Apache-2.0</li>
+              <li>发布时间：2026-07-27 · 团队：SII Research</li>
+            </ul>
+
+            <h3>仓库内值得读的文档</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>路径</th><th>内容</th></tr></thead>
+                <tbody>
+                  <tr><td><code>src/tau0_vla/data/DATASET_FORMAT.md</code></td><td>LeRobot v3.0 数据要求与三层标注格式</td></tr>
+                  <tr><td><code>src/tau0_vla/data/README.md</code></td><td>数据流水线、batch 契约、归一化统计</td></tr>
+                  <tr><td><code>src/tau0_vla/adapters/README.md</code></td><td>统一 40 维契约、EEF/关节路由、SDK 顺序</td></tr>
+                  <tr><td><code>deploy/README.md</code></td><td>服务端点、动作恢复、硬件上机前的检查清单</td></tr>
+                  <tr><td><code>configs/_template/</code></td><td>新数据集/机器人的配置模板</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>术语速查</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>术语</th><th>含义</th></tr></thead>
+                <tbody>
+                  <tr><td>VLA</td><td>Vision-Language-Action model，视觉-语言-动作模型</td></tr>
+                  <tr><td>TTC</td><td>Test-Time Computation，测试时计算：推理阶段额外投入算力以改善决策</td></tr>
+                  <tr><td>MoT</td><td>Mixture-of-Transformers，本文中指 VLM 塔与动作专家塔逐层配对的双塔结构</td></tr>
+                  <tr><td>Flow Matching</td><td>流匹配，通过回归速度场把噪声连续输运到数据；此处用于生成动作块</td></tr>
+                  <tr><td>Action Chunk</td><td>动作块，一次预测的 H 步未来动作（示例配置 H=30）</td></tr>
+                  <tr><td>Execution Memory</td><td>执行记忆，高层策略维护的语义级任务进度记录</td></tr>
+                  <tr><td>Plan Once</td><td>每个决策点只做一次子任务预测的基线设置</td></tr>
+                  <tr><td>Best-of-N</td><td>采样 N 个一步候选并评分选优</td></tr>
+                  <tr><td>EEF</td><td>End-Effector，末端执行器；EEF 控制 ≠ 关节控制</td></tr>
+                  <tr><td>rot6D</td><td>用旋转矩阵前两列（R[:,0], R[:,1]）表示姿态，避免四元数的不连续性</td></tr>
+                  <tr><td>M-RoPE</td><td>Multimodal RoPE，Qwen-VL 系的 3D（时间/高/宽）位置编码</td></tr>
+                  <tr><td>GatedDeltaNet</td><td>Qwen3.5 中的线性注意力层，携带循环状态而非 KV cache</td></tr>
+                  <tr><td>AdaRMSNorm</td><td>FiLM 式自适应归一化，用时间嵌入生成 γ/β/gate 做条件注入</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <footer>
+            <p>
+              <strong>τ₀-VLA 论文阅读报告</strong> · 本页为第三方学习笔记，非官方发布物。
+            </p>
+            <p>
+              §0–§5、§9 的事实与数字整理自论文与
+              <a href="https://tau0-vla.github.io/" target="_blank" rel="noopener">官方项目主页</a>；
+              §6–§8、§10–§11 的实现细节来自
+              <a href="https://github.com/sii-research/tau-0-vla" target="_blank" rel="noopener">官方开源代码</a>
+              及仓库内文档；§12 为报告作者的分析与判断，不代表原作者观点。
+            </p>
+            <p>
+              代码与模型权重遵循 Apache-2.0；仓库自带示例数据遵循 CC BY-NC-SA 4.0（源自 AgiBot World Beta）。
+              若有事实性错误，请以论文原文与官方仓库为准。
+            </p>
+          </footer>
+        </div>
+      </main>
+    </div>
+
+    <button id="top-btn" aria-label="回到顶部">↑</button>
+    <script src="app.js"></script>
+  </body>
+</html>
